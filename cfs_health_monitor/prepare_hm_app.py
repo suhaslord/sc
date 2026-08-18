@@ -2,7 +2,7 @@
 """Create a Health Monitor cFS app from NASA sample_app inside a cFS bundle.
 
 This script intentionally starts from the exact sample_app revision checked out by
-that cFS bundle, then applies a small, reviewable set of changes.  This keeps the
+that cFS bundle, then applies a small, reviewable set of changes. This keeps the
 app aligned with the cFS version being compile-validated.
 """
 
@@ -34,7 +34,7 @@ def main() -> None:
         shutil.rmtree(target)
     shutil.copytree(source, target)
 
-    # Rename symbols/text first.  Binary files are ignored.
+    # Rename symbols/text first. Binary files are ignored.
     for path in target.rglob("*"):
         if not path.is_file():
             continue
@@ -74,15 +74,19 @@ def main() -> None:
         "    uint8  AlarmActive;\n",
     )
 
-    # Publish monitor state in housekeeping telemetry.
+    # Publish monitor state in housekeeping telemetry. The explicit reserved
+    # bytes turn compiler alignment into part of the packet contract, so the
+    # OpenC3/COSMOS definition can match the generated C layout exactly.
     msgdefs = target / "config" / "default_hm_app_msgdefs.h"
     replace_text(
         msgdefs,
         "    uint8 CommandErrorCounter;\n} HM_APP_HkTlm_Payload_t;",
-        "    uint8  CommandErrorCounter;\n"
+        "    uint8 CommandErrorCounter;\n"
+        "    uint8 AlignmentPad[2];\n"
         "    uint32 CurrentSample;\n"
         "    uint32 Threshold;\n"
-        "    uint8  AlarmActive;\n"
+        "    uint8 AlarmActive;\n"
+        "    uint8 Reserved[3];\n"
         "} HM_APP_HkTlm_Payload_t;",
     )
 
@@ -116,6 +120,7 @@ def main() -> None:
     start = text.find(signature)
     if start < 0:
         raise RuntimeError("HM_APP_DisplayParamCmd signature not found")
+
     # This handler is the last function in sample_app_cmds.c.
     replacement = r'''CFE_Status_t HM_APP_DisplayParamCmd(const HM_APP_DisplayParamCmd_t *Msg)
 {
@@ -140,9 +145,6 @@ def main() -> None:
 
         if (HM_APP_Data.AlarmActive != 0)
         {
-            /* Current cFS EVS exposes DEBUG/INFORMATION/ERROR/CRITICAL event
-             * types; there is no WARNING enum. An alarm is operational state,
-             * not an application failure, so report it as INFORMATION. */
             CFE_EVS_SendEvent(HM_APP_VALUE_INF_EID,
                               CFE_EVS_EventType_INFORMATION,
                               "HM_APP: alarm sample=%lu threshold=%lu",
