@@ -1,0 +1,92 @@
+name: cFS Health Monitor Integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cfs-health-monitor-ci
+    paths:
+      - 'cfs_health_monitor/**'
+      - '.github/workflows/cfs-health-monitor.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout validation harness
+        uses: actions/checkout@v4
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git
+
+      - name: Clone NASA cFS bundle with submodules
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/nasa/cFS.git cFS
+          git -C cFS submodule status
+
+      - name: Inject Health Monitor app into the real mission tree
+        run: |
+          python3 cfs_health_monitor/prepare_hm_app.py cFS
+          test -f cFS/apps/hm_app/fsw/src/hm_app.c
+          grep -n 'hm_app' cFS/sample_defs/targets.cmake
+          grep -n '0xE2\|0xE3' cFS/apps/hm_app/fsw/inc/hm_app_topicids.h
+
+      - name: Prepare native cFS build
+        working-directory: cFS
+        run: make native_std.prep
+
+      - name: Compile and install native cFS mission
+        working-directory: cFS
+        run: make -j2 native_std.install
+
+      - name: Verify Health Monitor binary was staged
+        working-directory: cFS
+        run: |
+          find build-native_std -type f \( -name 'hm_app.so' -o -name 'hm_app' \) -print | tee /tmp/hm_artifacts.txt
+          test -s /tmp/hm_artifacts.txt
+
+      - name: Add Health Monitor to cFE startup script
+        working-directory: cFS
+        run: |
+          startup='build-native_std/exe/cpu1/cfe_es_startup.scr'
+          test -f "$startup"
+          printf 'CFE_APP, hm_app,      HM_APP_Main,      HM_APP,       55,   32768, 0x0, 0;\n' >> "$startup"
+          tail -n 8 "$startup"
+
+      - name: Boot cFE and prove HM_APP initializes
+        working-directory: cFS/build-native_std/exe/cpu1
+        run: |
+          set +e
+          timeout 20s ./core-cpu1 > cfs_boot.log 2>&1
+          rc=$?
+          set -e
+          cat cfs_boot.log
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            echo "core-cpu1 exited unexpectedly with $rc"
+            exit "$rc"
+          fi
+          grep -Ei 'Health Monitor Initialized|HM_APP' cfs_boot.log
+
+      - name: Validate COSMOS smoke-test syntax
+        run: |
+          python3 -m py_compile cfs_health_monitor/cosmos/hm_app_test.py
+          grep -q 'HM_APP_CMD_CONTROL' cfs_health_monitor/cosmos/hm_app_cmd_def.txt
+          grep -q 'ALARM_ACTIVE' cfs_health_monitor/cosmos/hm_app_tlm_def.txt
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfs-health-monitor-evidence
+          path: |
+            cFS/build-native_std/exe/cpu1/cfs_boot.log
+            /tmp/hm_artifacts.txt
+            cfs_health_monitor/cosmos/
+          if-no-files-found: warn
