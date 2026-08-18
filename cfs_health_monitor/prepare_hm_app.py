@@ -140,8 +140,11 @@ def main() -> None:
 
         if (HM_APP_Data.AlarmActive != 0)
         {
+            /* Current cFS EVS exposes DEBUG/INFORMATION/ERROR/CRITICAL event
+             * types; there is no WARNING enum. An alarm is operational state,
+             * not an application failure, so report it as INFORMATION. */
             CFE_EVS_SendEvent(HM_APP_VALUE_INF_EID,
-                              CFE_EVS_EventType_WARNING,
+                              CFE_EVS_EventType_INFORMATION,
                               "HM_APP: alarm sample=%lu threshold=%lu",
                               (unsigned long)HM_APP_Data.CurrentSample,
                               (unsigned long)HM_APP_Data.Threshold);
