@@ -1,0 +1,18 @@
+# Drop into nasa/cfs-cosmos-plugin targets/CFS/cmd_tlm.
+# Requires the HM_APP entries from hm_app_msg_list_patch.rb to be added to
+# targets/CFS/lib/cfs_cmd_tlm_list.rb.
+
+<%= cfs_cmd_hdr(target_name, 'HM_APP_SEND_HK_CMD', 0, 'Health Monitor housekeeping request') %>
+
+<%= cfs_cmd_hdr(target_name, 'HM_APP_CMD_NOOP', 0, 'Health Monitor NOOP') %>
+
+<%= cfs_cmd_hdr(target_name, 'HM_APP_CMD_RESET_COUNTERS', 1, 'Reset Health Monitor command counters') %>
+
+# Function code 3 retains the sample_app payload layout but is used by HM_APP
+# as a monitor-control command. ACTION 0 sets threshold; ACTION 1 injects a sample.
+<%= cfs_cmd_hdr(target_name, 'HM_APP_CMD_CONTROL', 3, 'Set threshold or inject a monitor sample') %>
+  APPEND_PARAMETER VALUE 32 UINT 0 MAX_UINT32 0 'Threshold/sample value'
+  APPEND_PARAMETER ACTION 16 INT 0 1 0 '0=set threshold, 1=inject sample'
+    STATE SET_THRESHOLD 0
+    STATE INJECT_SAMPLE 1
+  APPEND_PARAMETER NOTE 80 STRING '' 'Optional operator note'
