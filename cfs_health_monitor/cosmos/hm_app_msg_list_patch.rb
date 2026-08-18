@@ -11,7 +11,6 @@
     packet_names: [
         "HM_APP_CMD_NOOP",
         "HM_APP_CMD_RESET_COUNTERS",
-        "HM_APP_CMD_PROCESS",
         "HM_APP_CMD_CONTROL",
     ]
 ),
