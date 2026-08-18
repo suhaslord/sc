@@ -52,17 +52,18 @@ jobs:
         working-directory: cFS
         run: make -j2 native_std.install
 
-      - name: Verify Health Monitor binary was staged
+      - name: Verify Health Monitor binary and cFE executable were staged
         working-directory: cFS
         run: |
           find build-native_std -type f \( -name 'hm_app.so' -o -name 'hm_app' \) -print | tee /tmp/hm_artifacts.txt
           test -s /tmp/hm_artifacts.txt
+          test -x build-native_std/exe/cpu1/core-cpu1
+          test -f build-native_std/exe/cpu1/startup.scr
 
       - name: Add Health Monitor to cFE startup script
         working-directory: cFS
         run: |
-          startup='build-native_std/exe/cpu1/cfe_es_startup.scr'
-          test -f "$startup"
+          startup='build-native_std/exe/cpu1/startup.scr'
           printf 'CFE_APP, hm_app,      HM_APP_Main,      HM_APP,       55,   32768, 0x0, 0;\n' >> "$startup"
           tail -n 8 "$startup"
 
