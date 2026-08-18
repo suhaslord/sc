@@ -68,7 +68,11 @@ def main() -> None:
     require_regex(fcncodes, r"HM_APP_FunctionCode_NOOP\s*=\s*0\b", "NOOP function code must be 0")
     require_regex(fcncodes, r"HM_APP_FunctionCode_RESET_COUNTERS\s*=\s*1\b", "reset function code must be 1")
     require_regex(fcncodes, r"HM_APP_FunctionCode_DISPLAY_PARAM\s*=\s*3\b", "monitor-control function code must be 3")
-    require_regex(interface_cfg, r"HM_APP_STRING_VAL_LEN\s+10\b", "control NOTE/string width must be 10 bytes")
+    require_regex(
+        interface_cfg,
+        r"DEFAULT_HM_APP_MISSION_STRING_VAL_LEN\s+10\b",
+        "control NOTE/string width must be 10 bytes",
+    )
 
     # Generated C payloads. Explicit reserved bytes make the HK wire contract
     # deterministic for the COSMOS definition rather than relying on implicit
@@ -86,13 +90,9 @@ def main() -> None:
         ],
         "HM_APP housekeeping payload",
     )
-    require_in_order(
+    require_regex(
         msgdefs,
-        [
-            "uint32 ValU32;",
-            "int16 ValI16;",
-            "char ValString[HM_APP_STRING_VAL_LEN];",
-        ],
+        r"(?s)uint32\s+ValU32;.*?int16\s+ValI16;.*?char\s+ValStr\[HM_APP_MISSION_STRING_VAL_LEN\];",
         "HM_APP monitor-control payload",
     )
 
