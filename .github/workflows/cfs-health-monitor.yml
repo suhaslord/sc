@@ -8,6 +8,12 @@ on:
     paths:
       - 'cfs_health_monitor/**'
       - '.github/workflows/cfs-health-monitor.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'cfs_health_monitor/**'
+      - '.github/workflows/cfs-health-monitor.yml'
 
 permissions:
   contents: read
