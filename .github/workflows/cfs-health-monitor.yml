@@ -58,13 +58,14 @@ jobs:
           find build-native_std -type f \( -name 'hm_app.so' -o -name 'hm_app' \) -print | tee /tmp/hm_artifacts.txt
           test -s /tmp/hm_artifacts.txt
           test -x build-native_std/exe/cpu1/core-cpu1
-          test -f build-native_std/exe/cpu1/startup.scr
+          test -f build-native_std/exe/cpu1/cf/cfe_es_startup.scr
 
       - name: Add Health Monitor to cFE startup script
         working-directory: cFS
         run: |
-          startup='build-native_std/exe/cpu1/startup.scr'
+          startup='build-native_std/exe/cpu1/cf/cfe_es_startup.scr'
           printf 'CFE_APP, hm_app,      HM_APP_Main,      HM_APP,       55,   32768, 0x0, 0;\n' >> "$startup"
+          grep -F 'CFE_APP, hm_app' "$startup"
           tail -n 8 "$startup"
 
       - name: Boot cFE and prove HM_APP initializes
@@ -79,7 +80,8 @@ jobs:
             echo "core-cpu1 exited unexpectedly with $rc"
             exit "$rc"
           fi
-          grep -Ei 'Health Monitor Initialized|HM_APP' cfs_boot.log
+          grep -F 'Health Monitor Initialized.' cfs_boot.log
+          grep -F 'CFE_ES_Main entering OPERATIONAL state' cfs_boot.log
 
       - name: Validate COSMOS smoke-test syntax
         run: |
@@ -94,6 +96,7 @@ jobs:
           name: cfs-health-monitor-evidence
           path: |
             cFS/build-native_std/exe/cpu1/cfs_boot.log
+            cFS/build-native_std/exe/cpu1/cf/cfe_es_startup.scr
             /tmp/hm_artifacts.txt
             cfs_health_monitor/cosmos/
           if-no-files-found: warn
