@@ -44,6 +44,11 @@ jobs:
           grep -n 'hm_app' cFS/sample_defs/targets.cmake
           grep -n '0xE2\|0xE3' cFS/apps/hm_app/fsw/inc/hm_app_topicids.h
 
+      - name: Validate generated cFS to COSMOS contract
+        run: |
+          python3 cfs_health_monitor/verify_cosmos_contract.py cFS
+          python3 -m py_compile cfs_health_monitor/cosmos/hm_app_test.py
+
       - name: Prepare native cFS build
         working-directory: cFS
         run: make native_std.prep
@@ -82,12 +87,6 @@ jobs:
           fi
           grep -F 'Health Monitor Initialized.' cfs_boot.log
           grep -F 'CFE_ES_Main entering OPERATIONAL state' cfs_boot.log
-
-      - name: Validate COSMOS smoke-test syntax
-        run: |
-          python3 -m py_compile cfs_health_monitor/cosmos/hm_app_test.py
-          grep -q 'HM_APP_CMD_CONTROL' cfs_health_monitor/cosmos/hm_app_cmd_def.txt
-          grep -q 'ALARM_ACTIVE' cfs_health_monitor/cosmos/hm_app_tlm_def.txt
 
       - name: Upload build evidence
         if: always()
