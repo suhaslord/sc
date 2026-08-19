@@ -1,0 +1,120 @@
+name: 5G BS Failure 2021 Latch-Fix Validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: cpptromar/5G-Self-Organized-Network-Simulator
+          ref: master
+          path: sim
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev
+
+      - name: Configure scenario and minimal latch fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for header in Path('sim/SHNSim').glob('*.h'):
+              text=header.read_text(encoding='utf-8-sig')
+              if 'uint32_t' in text and '#include <cstdint>' not in text and '#include <stdint.h>' not in text:
+                  header.write_text('#include <cstdint>\n'+text,encoding='utf-8')
+
+          # Minimal state-machine correction: if healing had previously latched
+          # complete, but a newly disabled BS still owns users, re-enter healing.
+          irp=Path('sim/SHNSim/IRPManager.cpp')
+          x=irp.read_text(encoding='utf-8-sig')
+          needle='\t\t//Choose algorithm based on user input\n\t\tswitch (Simulator::getalgorithmVer()) {'
+          patch='''\t\t// Re-enter healing when a newly unhealthy BS still has users to offload.\n\t\tif (this->doneHealing) {\n\t\t\tfor (const auto& unhealthyBS : this->disabledBSs) {\n\t\t\t\tif (Simulator::getBS(unhealthyBS).getUEDB().size() > 0) {\n\t\t\t\t\tthis->doneHealing = false;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\t//Choose algorithm based on user input\n\t\tswitch (Simulator::getalgorithmVer()) {'''
+          if needle not in x: raise SystemExit('IRP insertion point not found')
+          irp.write_text(x.replace(needle,patch,1),encoding='utf-8')
+
+          p=Path('sim/SHNSim/GUIMain.cpp')
+          s=p.read_text(encoding='utf-8-sig')
+          a=s.index('int main(int argc, char** argv)')
+          b=s.index('//Holds the logic for how the progress bar is updated',a)
+          main=r'''int main(int argc, char** argv)
+          {
+              GUIDataContainer::argc=argc; GUIDataContainer::argv=argv; FileIO::setFPSlash('/');
+              GUIDataContainer::count=7; GUIDataContainer::bsLen=10; GUIDataContainer::antNum=3;
+              GUIDataContainer::transNum=100; GUIDataContainer::uePerAnt=15; GUIDataContainer::simLen=240;
+              GUIDataContainer::simNum=1; GUIDataContainer::simStartNum=0; GUIDataContainer::simName="bs_failure_latchfix";
+              GUIDataContainer::bufSizeInSeconds=10; GUIDataContainer::congestionState=90; GUIDataContainer::alertState=80;
+              GUIDataContainer::algorithmVer=1; GUIDataContainer::RSRPThreshold=-85.0f; GUIDataContainer::mobilityBufSizeInMinutes=5;
+              GUIDataContainer::status={3,0,0,0,0,0,0}; GUIDataContainer::startTime={100,0,0,0,0,0,0};
+              GUIDataContainer::riseTime={1,1,1,1,1,1,1}; GUIDataContainer::endState={0,50,50,50,50,50,50};
+              GUIDataContainer::neighbors[0].push_back({1,1}); GUIDataContainer::neighbors[0].push_back({5,3}); GUIDataContainer::neighbors[0].push_back({6,2});
+              GUIDataContainer::neighbors[1].push_back({0,4}); GUIDataContainer::neighbors[1].push_back({2,2}); GUIDataContainer::neighbors[1].push_back({6,3});
+              GUIDataContainer::neighbors[2].push_back({1,5}); GUIDataContainer::neighbors[2].push_back({3,3}); GUIDataContainer::neighbors[2].push_back({6,4});
+              GUIDataContainer::neighbors[3].push_back({2,6}); GUIDataContainer::neighbors[3].push_back({4,4}); GUIDataContainer::neighbors[3].push_back({6,5});
+              GUIDataContainer::neighbors[4].push_back({3,1}); GUIDataContainer::neighbors[4].push_back({5,5}); GUIDataContainer::neighbors[4].push_back({6,6});
+              GUIDataContainer::neighbors[5].push_back({0,6}); GUIDataContainer::neighbors[5].push_back({4,2}); GUIDataContainer::neighbors[5].push_back({6,1});
+              GUIDataContainer::neighbors[6].push_back({0,5}); GUIDataContainer::neighbors[6].push_back({1,6}); GUIDataContainer::neighbors[6].push_back({2,1});
+              GUIDataContainer::neighbors[6].push_back({3,2}); GUIDataContainer::neighbors[6].push_back({4,3}); GUIDataContainer::neighbors[6].push_back({5,4});
+              return Setup::GUIentryPoint()?0:1;
+          }
+
+          '''
+          s=s[:a]+main+s[b:]
+          f=s.index('void GUIMain::doProgressBar(double frac, bool fin)'); brace=s.index('{',f); depth=0
+          for i in range(brace,len(s)):
+              depth+=(s[i]=='{')-(s[i]=='}')
+              if depth==0: end=i+1; break
+          p.write_text(s[:f]+'void GUIMain::doProgressBar(double, bool) {}'+s[end:],encoding='utf-8')
+          PY
+
+      - name: Build simulator
+        working-directory: sim/SHNSim
+        run: make output
+
+      - name: Run scenario
+        working-directory: sim/SHNSim
+        run: ./output 2>&1 | tee run.log
+
+      - name: Measure recovery
+        working-directory: sim/SHNSim
+        run: |
+          python3 - <<'PY'
+          import csv,json
+          from collections import Counter,defaultdict
+          rows=[]
+          with open('bs_failure_latchfix_SIM_0.csv',newline='') as f:
+              for r in csv.DictReader(f): rows.append({'t':int(r['Time']),'bs':int(r['BS_ID']),'ue':int(r['UE_ID']),'d':float(r['DEMAND_DR (bits)']),'real':float(r['REAL_DR (bits)']),'rsrp':float(r['RSRP (dBm)']),'ddr':float(r['DDR (%)'])})
+          affected={r['ue'] for r in rows if 80<=r['t']<=99 and r['bs']==0}
+          def met(lo,hi):
+              rr=[r for r in rows if lo<=r['t']<=hi and r['ue'] in affected]; d=sum(r['d'] for r in rr); real=sum(r['real'] for r in rr)
+              return {'window':[lo,hi],'unique_users':len({r['ue'] for r in rr}),'demand_satisfaction':real/d if d else None,'relocated_row_fraction':sum(r['bs']!=0 for r in rr)/len(rr) if rr else None,'mean_rsrp_dbm':sum(r['rsrp'] for r in rr)/len(rr) if rr else None,'mean_ddr_pct':sum(r['ddr'] for r in rr)/len(rr) if rr else None}
+          by=defaultdict(list)
+          for r in rows:
+              if r['t']>=100 and r['ue'] in affected: by[r['t']].append(r)
+          base=met(80,99); rt=None; streak=0
+          for t in range(100,240):
+              rr=by[t]; moved={r['ue'] for r in rr if r['bs']!=0}; seen={r['ue'] for r in rr}; d=sum(r['d'] for r in rr); real=sum(r['real'] for r in rr); sat=real/d if d else 0
+              ok=len(seen)>=.9*len(affected) and len(moved)>=.9*len(affected) and sat>=.9*base['demand_satisfaction']
+              streak=streak+1 if ok else 0
+              if streak>=5: rt=t-4; break
+          result={'failure_time':100,'affected_users':len(affected),'baseline':base,'transition':met(100,119),'recovery':met(120,159),'steady':met(200,239),'recovery_tick':rt,'recovery_delay_ticks':None if rt is None else rt-100,'final_destinations':dict(Counter(r['bs'] for r in by[239]))}
+          print('=== 2021 LATCH-FIX METRICS ==='); print(json.dumps(result,indent=2)); open('metrics-latchfix.json','w').write(json.dumps(result,indent=2))
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 5g-bs-failure-2021-latch-fix
+          path: |
+            sim/SHNSim/metrics-latchfix.json
+            sim/SHNSim/run.log
+            sim/SHNSim/bs_failure_latchfix_SIM_0.csv
+          retention-days: 7
