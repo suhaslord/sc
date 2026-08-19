@@ -1,9 +1,6 @@
 name: 5G BS Failure Recovery Experiment
 
 on:
-  push:
-    branches:
-      - experiment/5g-bs-failure
   pull_request:
     branches:
       - main
@@ -27,19 +24,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libgtk-3-dev
 
-      - name: Configure deterministic headless failure experiment
+      - name: Configure controlled headless failure experiment
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          # Legacy source relies on uint32_t being pulled in transitively by older
-          # toolchains. Make that dependency explicit for modern GCC without
-          # changing any simulator behavior.
-          drh = Path('sim/SHNSim/DataRateTable.h')
-          d = drh.read_text(encoding='utf-8-sig')
-          if '#include <cstdint>' not in d:
-              d = d.replace('#include <vector>', '#include <vector>\n#include <cstdint>')
-          drh.write_text(d, encoding='utf-8')
+          # The 2021-era source relied on old toolchains pulling uint32_t in
+          # transitively. Make that dependency explicit wherever needed; this
+          # is build compatibility only and does not change simulation logic.
+          for header in Path('sim/SHNSim').glob('*.h'):
+              text = header.read_text(encoding='utf-8-sig')
+              if 'uint32_t' in text and '#include <cstdint>' not in text:
+                  text = '#include <cstdint>\n' + text
+                  header.write_text(text, encoding='utf-8')
 
           p = Path('sim/SHNSim/GUIMain.cpp')
           s = p.read_text(encoding='utf-8-sig')
@@ -182,21 +179,20 @@ jobs:
                       pass
 
           failure_t = 100
-          baseline_lo, baseline_hi = 80, 99
-          baseline_rows = [r for r in rows if baseline_lo <= r['t'] <= baseline_hi and r['bs'] == 0]
+          baseline_rows = [r for r in rows if 80 <= r['t'] <= 99 and r['bs'] == 0]
           affected = sorted({r['ue'] for r in baseline_rows})
           affected_set = set(affected)
           if not affected:
               raise SystemExit('No BS0 baseline users found')
 
-          def metrics(lo, hi, affected_only=True):
-              rr = [r for r in rows if lo <= r['t'] <= hi and (not affected_only or r['ue'] in affected_set)]
+          def metrics(lo, hi):
+              rr = [r for r in rows if lo <= r['t'] <= hi and r['ue'] in affected_set]
               demand = sum(r['demand'] for r in rr)
               real = sum(r['real'] for r in rr)
               rsrp = [r['rsrp'] for r in rr if math.isfinite(r['rsrp'])]
               ddr = [r['ddr'] for r in rr if math.isfinite(r['ddr'])]
               relocated = [r for r in rr if r['bs'] != 0]
-              expected = len(affected) * (hi - lo + 1) if affected_only else None
+              expected = len(affected) * (hi - lo + 1)
               return {
                   'window': [lo, hi],
                   'observations': len(rr),
@@ -283,9 +279,3 @@ jobs:
             sim/SHNSim/*bs_failure_experiment*_SIM_0*.csv
           if-no-files-found: warn
           retention-days: 7
-
-      - name: Signal experiment completion for log retrieval
-        if: success()
-        run: |
-          echo "Experiment completed successfully; intentional nonzero exit only to surface the run in notification email."
-          exit 1
