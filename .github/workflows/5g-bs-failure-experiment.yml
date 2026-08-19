@@ -32,6 +32,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          # Legacy source relies on uint32_t being pulled in transitively by older
+          # toolchains. Make that dependency explicit for modern GCC without
+          # changing any simulator behavior.
+          drh = Path('sim/SHNSim/DataRateTable.h')
+          d = drh.read_text(encoding='utf-8-sig')
+          if '#include <cstdint>' not in d:
+              d = d.replace('#include <vector>', '#include <vector>\n#include <cstdint>')
+          drh.write_text(d, encoding='utf-8')
+
           p = Path('sim/SHNSim/GUIMain.cpp')
           s = p.read_text(encoding='utf-8-sig')
 
