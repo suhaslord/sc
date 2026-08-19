@@ -1,13 +1,30 @@
 from openc3.script import *
 
 TARGET = "<%= target_name %>"
+TLM_OUTPUT_IP = "<%= global_tlm_output_ip %>"
+HM_HK_STREAM_ID = <%= get_cfs_pkt_msg_id('HM_APP_HK', cfs_cpu_num_from_target_name(target_name)) %>
+
+
+def enable_live_telemetry_path():
+    """Enable TO_LAB output and subscribe it to HM_APP housekeeping."""
+    print(f"Enabling TO_LAB telemetry output to {TLM_OUTPUT_IP}")
+    cmd(f"{TARGET} TO_LAB_CMD_ENABLE_OUTPUT with DEST_IP '{TLM_OUTPUT_IP}'")
+    wait_check_packet(TARGET, "TO_LAB_HK", 1, 100)
+
+    to_cmd_count = tlm(f"{TARGET} TO_LAB_HK COMMAND_COUNTER")
+    cmd(
+        f"{TARGET} TO_LAB_CMD_ADD_PACKET with STREAM_VALUE {HM_HK_STREAM_ID}, "
+        "FLAGS_PRIORITY 0, FLAGS_RELIABILITY 0, BUF_LIMIT 4"
+    )
+    wait_check(f"{TARGET} TO_LAB_HK COMMAND_COUNTER == {to_cmd_count + 1}", 100)
 
 
 def request_hk():
     """Request a fresh HM_APP housekeeping packet.
 
     HM_APP is added to the sample mission without changing the scheduler table,
-    so the smoke test must not assume periodic HM housekeeping already exists.
+    so the smoke test explicitly requests housekeeping rather than assuming a
+    periodic scheduler entry exists.
     """
     cmd(f"{TARGET} HM_APP_SEND_HK_CMD")
 
@@ -23,10 +40,13 @@ def refresh_and_check(expression):
 
 
 def main():
-    print("HM_APP smoke test: requesting housekeeping telemetry")
+    print("HM_APP live OpenC3/cFS round-trip test")
+    enable_live_telemetry_path()
+
+    print("Requesting HM_APP housekeeping through COSMOS")
     wait_for_hk()
 
-    # Prove the app command path is alive.
+    # Prove the app command path is alive end-to-end.
     count = tlm(f"{TARGET} HM_APP_HK COMMAND_COUNTER")
     cmd(f"{TARGET} HM_APP_CMD_NOOP")
     refresh_and_check(f"{TARGET} HM_APP_HK COMMAND_COUNTER == {count + 1}")
@@ -55,7 +75,7 @@ def main():
     refresh_and_check(f"{TARGET} HM_APP_HK THRESHOLD == 150")
     refresh_and_check(f"{TARGET} HM_APP_HK ALARM_ACTIVE == 0")
 
-    print("HM_APP smoke test PASSED")
+    print("HM_APP live OpenC3/cFS round-trip PASSED")
 
 
 main()
