@@ -1,6 +1,9 @@
 name: 5G BS Failure Recovery Experiment
 
 on:
+  push:
+    branches:
+      - experiment/5g-bs-failure
   pull_request:
     branches:
       - main
