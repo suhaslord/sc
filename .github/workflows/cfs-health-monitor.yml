@@ -2,12 +2,6 @@ name: cFS Health Monitor Integration
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - cfs-health-monitor-ci
-    paths:
-      - 'cfs_health_monitor/**'
-      - '.github/workflows/cfs-health-monitor.yml'
   pull_request:
     branches:
       - main
@@ -19,9 +13,9 @@ permissions:
   contents: read
 
 jobs:
-  build-and-boot:
+  build-boot-and-roundtrip:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
 
     steps:
       - name: Checkout validation harness
@@ -30,7 +24,7 @@ jobs:
       - name: Install host build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake git
+          sudo apt-get install -y build-essential cmake git curl util-linux
 
       - name: Clone NASA cFS bundle with submodules
         run: |
@@ -47,7 +41,6 @@ jobs:
       - name: Validate generated cFS to COSMOS contract
         run: |
           python3 cfs_health_monitor/verify_cosmos_contract.py cFS
-          python3 -m py_compile cfs_health_monitor/cosmos/hm_app_test.py
 
       - name: Prepare native cFS build
         working-directory: cFS
@@ -71,7 +64,8 @@ jobs:
           startup='build-native_std/exe/cpu1/cf/cfe_es_startup.scr'
           printf 'CFE_APP, hm_app,      HM_APP_Main,      HM_APP,       55,   32768, 0x0, 0;\n' >> "$startup"
           grep -F 'CFE_APP, hm_app' "$startup"
-          tail -n 8 "$startup"
+          grep -E 'ci_lab|to_lab' "$startup"
+          tail -n 10 "$startup"
 
       - name: Boot cFE and prove HM_APP initializes
         working-directory: cFS/build-native_std/exe/cpu1
@@ -88,14 +82,152 @@ jobs:
           grep -F 'Health Monitor Initialized.' cfs_boot.log
           grep -F 'CFE_ES_Main entering OPERATIONAL state' cfs_boot.log
 
-      - name: Upload build evidence
+      - name: Prepare NASA cFS COSMOS plugin with HM_APP support
+        run: |
+          git clone --depth 1 https://github.com/nasa/cfs-cosmos-plugin.git cfs-cosmos-plugin
+          python3 cfs_health_monitor/prepare_cosmos_plugin.py cfs-cosmos-plugin
+          grep -n 'HM_APP_CMD\|HM_APP_HK' cfs-cosmos-plugin/targets/CFS/lib/cfs_cmd_tlm_list.rb
+          test -f cfs-cosmos-plugin/targets/CFS/procedures/hm_app_test.py
+
+      - name: Start OpenC3 COSMOS with cFS telemetry UDP ports
+        run: |
+          git clone --depth 1 https://github.com/OpenC3/cosmos-project.git cosmos-project
+          cat > cosmos-project/compose.override.yaml <<'YAML'
+          services:
+            openc3-operator:
+              ports:
+                - "127.0.0.1:2234:2234/udp"
+                - "127.0.0.1:2235:2235/udp"
+            openc3-cosmos-init:
+              environment:
+                - OPENC3_DEMO=
+          YAML
+          cd cosmos-project
+          ./openc3.sh run
+
+      - name: Wait for OpenC3 initialization
+        run: |
+          set -e
+          ready=0
+          for _ in $(seq 1 72); do
+            init_id=$(docker ps -aq --filter 'name=openc3-cosmos-init' | head -n 1)
+            if [ -n "$init_id" ]; then
+              state=$(docker inspect -f '{{.State.Status}}' "$init_id")
+              if [ "$state" = "exited" ]; then
+                code=$(docker inspect -f '{{.State.ExitCode}}' "$init_id")
+                docker logs "$init_id" > cfs_health_monitor/openc3_init.log 2>&1 || true
+                if [ "$code" = "0" ]; then
+                  ready=1
+                  break
+                fi
+                cat cfs_health_monitor/openc3_init.log
+                echo "OpenC3 init exited with $code"
+                exit "$code"
+              fi
+            fi
+            sleep 5
+          done
+          if [ "$ready" != "1" ]; then
+            docker ps -a
+            echo "OpenC3 init did not complete in time"
+            exit 1
+          fi
+          curl -fsS --retry 20 --retry-delay 3 http://localhost:2900/ >/dev/null
+          docker ps --format 'table {{.Names}}\t{{.Status}}'
+
+      - name: Build HM-enabled NASA COSMOS plugin gem
+        shell: 'script -q -e -c "bash {0}"'
+        run: |
+          set -e
+          make -C cfs-cosmos-plugin gem \
+            O="$PWD/cFS/build-native_std" \
+            PLUGIN_VERSION=0.0.1 \
+            OPENC3_COMMAND="$PWD/cosmos-project/openc3.sh"
+          find cFS/build-native_std/cosmos/plugin -maxdepth 1 -name '*.gem' -print | tee /tmp/cosmos_gem.txt
+          test -s /tmp/cosmos_gem.txt
+
+      - name: Install HM-enabled cFS plugin into OpenC3
+        shell: 'script -q -e -c "bash {0}"'
+        run: |
+          set -e
+          gateway=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
+          test -n "$gateway"
+          cat > cfs_health_monitor/cosmos_plugin_vars.json <<JSON
+          {
+            "cfs_eds_enabled": "false",
+            "cfs_mem_addr_size": "64",
+            "cfs_endianness": "LITTLE_ENDIAN",
+            "cfs_1_intf_ip": "$gateway",
+            "cfs_2_intf_ip": "$gateway",
+            "global_tlm_output_ip": "127.0.0.1"
+          }
+          JSON
+          gem=$(find cFS/build-native_std/cosmos/plugin -maxdepth 1 -name '*.gem' -print -quit)
+          test -n "$gem"
+          ./cosmos-project/openc3.sh cli load "$gem" DEFAULT --variables cfs_health_monitor/cosmos_plugin_vars.json
+          ./cosmos-project/openc3.sh cli list DEFAULT | tee cfs_health_monitor/openc3_plugins.log
+          grep -i 'cfs' cfs_health_monitor/openc3_plugins.log
+
+      - name: Start cFS for live OpenC3 round trip
+        run: |
+          cd cFS/build-native_std/exe/cpu1
+          nohup ./core-cpu1 > cfs_roundtrip.log 2>&1 &
+          echo $! > "$GITHUB_WORKSPACE/cfs_health_monitor/cfs_roundtrip.pid"
+          for _ in $(seq 1 40); do
+            if grep -q 'CFE_ES_Main entering OPERATIONAL state' cfs_roundtrip.log && \
+               grep -q 'Health Monitor Initialized.' cfs_roundtrip.log; then
+              break
+            fi
+            sleep 1
+          done
+          grep -F 'CFE_ES_Main entering OPERATIONAL state' cfs_roundtrip.log
+          grep -F 'Health Monitor Initialized.' cfs_roundtrip.log
+          ss -lun | grep ':1234' || true
+
+      - name: Execute live OpenC3 command and telemetry round trip
+        shell: 'script -q -e -c "bash {0}"'
+        run: |
+          set -e
+          ./cosmos-project/openc3.sh cli script run CFS-1/procedures/hm_app_test.py \
+            | tee cfs_health_monitor/openc3_roundtrip.log
+          grep -F 'HM_APP live OpenC3/cFS round-trip PASSED' cfs_health_monitor/openc3_roundtrip.log
+          grep -E 'HM_APP: (threshold set|sample=|alarm sample=)' \
+            cFS/build-native_std/exe/cpu1/cfs_roundtrip.log | tee cfs_health_monitor/hm_app_events.log
+          test -s cfs_health_monitor/hm_app_events.log
+
+      - name: Capture runtime diagnostics
+        if: always()
+        run: |
+          mkdir -p cfs_health_monitor/runtime_diagnostics
+          docker ps -a > cfs_health_monitor/runtime_diagnostics/docker_ps.txt 2>&1 || true
+          for container in openc3-operator openc3-cosmos-script-runner-api openc3-cosmos-cmd-tlm-api; do
+            id=$(docker ps -aq --filter "name=$container" | head -n 1)
+            if [ -n "$id" ]; then
+              docker logs "$id" > "cfs_health_monitor/runtime_diagnostics/${container}.log" 2>&1 || true
+            fi
+          done
+          if [ -f cfs_health_monitor/cfs_roundtrip.pid ]; then
+            kill "$(cat cfs_health_monitor/cfs_roundtrip.pid)" 2>/dev/null || true
+          fi
+          if [ -x cosmos-project/openc3.sh ]; then
+            ./cosmos-project/openc3.sh stop || true
+          fi
+
+      - name: Upload build and round-trip evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cfs-health-monitor-evidence
           path: |
             cFS/build-native_std/exe/cpu1/cfs_boot.log
+            cFS/build-native_std/exe/cpu1/cfs_roundtrip.log
             cFS/build-native_std/exe/cpu1/cf/cfe_es_startup.scr
             /tmp/hm_artifacts.txt
+            /tmp/cosmos_gem.txt
             cfs_health_monitor/cosmos/
+            cfs_health_monitor/openc3_init.log
+            cfs_health_monitor/openc3_plugins.log
+            cfs_health_monitor/openc3_roundtrip.log
+            cfs_health_monitor/hm_app_events.log
+            cfs_health_monitor/runtime_diagnostics/
           if-no-files-found: warn
