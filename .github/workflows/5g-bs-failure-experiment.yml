@@ -1,0 +1,273 @@
+name: 5G BS Failure Recovery Experiment
+
+on:
+  push:
+    branches:
+      - experiment/5g-bs-failure
+  workflow_dispatch:
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+        with:
+          repository: cpptromar/5G-Self-Organized-Network-Simulator
+          ref: master
+          path: sim
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev
+
+      - name: Configure deterministic headless failure experiment
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('sim/SHNSim/GUIMain.cpp')
+          s = p.read_text(encoding='utf-8-sig')
+
+          main_start = s.index('int main(int argc, char** argv)')
+          main_end = s.index('//Holds the logic for how the progress bar is updated', main_start)
+
+          main = r'''int main(int argc, char** argv)
+          {
+              GUIDataContainer::argc = argc;
+              GUIDataContainer::argv = argv;
+              FileIO::setFPSlash('/');
+
+              // Seven-cell topology, all healthy until one controlled failure.
+              GUIDataContainer::count = 7;
+              GUIDataContainer::bsLen = 10;
+              GUIDataContainer::antNum = 3;
+              GUIDataContainer::transNum = 100;
+              GUIDataContainer::uePerAnt = 15;
+              GUIDataContainer::simLen = 240;
+              GUIDataContainer::simNum = 1;
+              GUIDataContainer::simStartNum = 0;
+              GUIDataContainer::simName = "bs_failure_experiment";
+              GUIDataContainer::bufSizeInSeconds = 10;
+              GUIDataContainer::congestionState = 90;
+              GUIDataContainer::alertState = 80;
+              GUIDataContainer::algorithmVer = 1;
+              GUIDataContainer::RSRPThreshold = -85.0f;
+              GUIDataContainer::mobilityBufSizeInMinutes = 5;
+
+              // BS 0 stays healthy through tick 99, then fails at tick 100.
+              // All other cells remain normal for the full run.
+              GUIDataContainer::status = {3, 0, 0, 0, 0, 0, 0};
+              GUIDataContainer::startTime = {100, 0, 0, 0, 0, 0, 0};
+              GUIDataContainer::riseTime  = {1,   1, 1, 1, 1, 1, 1};
+              GUIDataContainer::endState  = {0,  50, 50, 50, 50, 50, 50};
+
+              GUIDataContainer::neighbors[0].push_back({1, 1});
+              GUIDataContainer::neighbors[0].push_back({5, 3});
+              GUIDataContainer::neighbors[0].push_back({6, 2});
+
+              GUIDataContainer::neighbors[1].push_back({0, 4});
+              GUIDataContainer::neighbors[1].push_back({2, 2});
+              GUIDataContainer::neighbors[1].push_back({6, 3});
+
+              GUIDataContainer::neighbors[2].push_back({1, 5});
+              GUIDataContainer::neighbors[2].push_back({3, 3});
+              GUIDataContainer::neighbors[2].push_back({6, 4});
+
+              GUIDataContainer::neighbors[3].push_back({2, 6});
+              GUIDataContainer::neighbors[3].push_back({4, 4});
+              GUIDataContainer::neighbors[3].push_back({6, 5});
+
+              GUIDataContainer::neighbors[4].push_back({3, 1});
+              GUIDataContainer::neighbors[4].push_back({5, 5});
+              GUIDataContainer::neighbors[4].push_back({6, 6});
+
+              GUIDataContainer::neighbors[5].push_back({0, 6});
+              GUIDataContainer::neighbors[5].push_back({4, 2});
+              GUIDataContainer::neighbors[5].push_back({6, 1});
+
+              GUIDataContainer::neighbors[6].push_back({0, 5});
+              GUIDataContainer::neighbors[6].push_back({1, 6});
+              GUIDataContainer::neighbors[6].push_back({2, 1});
+              GUIDataContainer::neighbors[6].push_back({3, 2});
+              GUIDataContainer::neighbors[6].push_back({4, 3});
+              GUIDataContainer::neighbors[6].push_back({5, 4});
+
+              return Setup::GUIentryPoint() ? 0 : 1;
+          }
+
+          '''
+          s = s[:main_start] + main + s[main_end:]
+
+          # Simulator::runSimulation calls this every ten ticks. For a headless
+          # experiment, remove GUI progress-bar access while preserving simulation logic.
+          fn_start = s.index('void GUIMain::doProgressBar(double frac, bool fin)')
+          brace = s.index('{', fn_start)
+          depth = 0
+          fn_end = None
+          for i in range(brace, len(s)):
+              if s[i] == '{':
+                  depth += 1
+              elif s[i] == '}':
+                  depth -= 1
+                  if depth == 0:
+                      fn_end = i + 1
+                      break
+          if fn_end is None:
+              raise RuntimeError('Could not locate doProgressBar body')
+          s = s[:fn_start] + 'void GUIMain::doProgressBar(double, bool) {}' + s[fn_end:]
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Build simulator
+        working-directory: sim/SHNSim
+        run: |
+          make clean || true
+          make output
+
+      - name: Run healthy-to-failure scenario
+        working-directory: sim/SHNSim
+        run: |
+          set -o pipefail
+          ./output 2>&1 | tee run.log
+
+      - name: Measure recovery
+        working-directory: sim/SHNSim
+        run: |
+          python3 - <<'PY'
+          import csv
+          import glob
+          import json
+          import math
+          from collections import defaultdict, Counter
+
+          files = sorted(glob.glob('*bs_failure_experiment*_SIM_0*.csv'))
+          if not files:
+              files = sorted(glob.glob('*_SIM_0*.csv'))
+          if not files:
+              raise SystemExit('No simulation CSV found')
+
+          path = files[0]
+          rows = []
+          with open(path, newline='') as f:
+              for r in csv.DictReader(f):
+                  try:
+                      rows.append({
+                          't': int(r['Time']),
+                          'bs': int(r['BS_ID']),
+                          'status': int(r['BS_STATUS']),
+                          'ue': int(r['UE_ID']),
+                          'demand': float(r['DEMAND_DR (bits)']),
+                          'real': float(r['REAL_DR (bits)']),
+                          'rsrp': float(r['RSRP (dBm)']),
+                          'ddr': float(r['DDR (%)']),
+                      })
+                  except (ValueError, KeyError):
+                      pass
+
+          failure_t = 100
+          baseline_lo, baseline_hi = 80, 99
+          baseline_rows = [r for r in rows if baseline_lo <= r['t'] <= baseline_hi and r['bs'] == 0]
+          affected = sorted({r['ue'] for r in baseline_rows})
+          affected_set = set(affected)
+          if not affected:
+              raise SystemExit('No BS0 baseline users found')
+
+          def metrics(lo, hi, affected_only=True):
+              rr = [r for r in rows if lo <= r['t'] <= hi and (not affected_only or r['ue'] in affected_set)]
+              demand = sum(r['demand'] for r in rr)
+              real = sum(r['real'] for r in rr)
+              rsrp = [r['rsrp'] for r in rr if math.isfinite(r['rsrp'])]
+              ddr = [r['ddr'] for r in rr if math.isfinite(r['ddr'])]
+              relocated = [r for r in rr if r['bs'] != 0]
+              expected = len(affected) * (hi - lo + 1) if affected_only else None
+              return {
+                  'window': [lo, hi],
+                  'observations': len(rr),
+                  'unique_users': len({r['ue'] for r in rr}),
+                  'demand_satisfaction': (real / demand) if demand else None,
+                  'mean_rsrp_dbm': (sum(rsrp) / len(rsrp)) if rsrp else None,
+                  'mean_ddr_pct': (sum(ddr) / len(ddr)) if ddr else None,
+                  'relocated_row_fraction': (len(relocated) / len(rr)) if rr else None,
+                  'present_fraction': (len(rr) / expected) if expected else None,
+              }
+
+          baseline = metrics(80, 99)
+          transition = metrics(100, 119)
+          recovery = metrics(120, 159)
+          steady = metrics(200, 239)
+
+          by_tick = defaultdict(list)
+          for r in rows:
+              if r['t'] >= failure_t and r['ue'] in affected_set:
+                  by_tick[r['t']].append(r)
+
+          baseline_sat = baseline['demand_satisfaction'] or 0.0
+          recovery_tick = None
+          streak = 0
+          for t in range(failure_t, 240):
+              rr = by_tick.get(t, [])
+              seen = {r['ue'] for r in rr}
+              relocated_users = {r['ue'] for r in rr if r['bs'] != 0}
+              demand = sum(r['demand'] for r in rr)
+              real = sum(r['real'] for r in rr)
+              sat = real / demand if demand else 0.0
+              present = len(seen) / len(affected)
+              relocated = len(relocated_users) / len(affected)
+              ok = present >= 0.90 and relocated >= 0.90 and sat >= 0.90 * baseline_sat
+              streak = streak + 1 if ok else 0
+              if streak >= 5:
+                  recovery_tick = t - 4
+                  break
+
+          bs0_status = defaultdict(Counter)
+          for r in rows:
+              if r['bs'] == 0:
+                  bs0_status[r['t']][r['status']] += 1
+          status_summary = []
+          last = None
+          for t in sorted(bs0_status):
+              status = bs0_status[t].most_common(1)[0][0]
+              if status != last:
+                  status_summary.append({'time': t, 'status': status})
+                  last = status
+
+          final_rows = by_tick.get(239, [])
+          final_dest = Counter(r['bs'] for r in final_rows)
+
+          result = {
+              'csv': path,
+              'failure_time': failure_t,
+              'affected_users': len(affected),
+              'bs0_status_transitions': status_summary,
+              'baseline_80_99': baseline,
+              'transition_100_119': transition,
+              'recovery_120_159': recovery,
+              'steady_200_239': steady,
+              'recovery_tick_criterion': recovery_tick,
+              'recovery_delay_ticks': None if recovery_tick is None else recovery_tick - failure_t,
+              'final_destination_counts_at_t239': dict(sorted(final_dest.items())),
+          }
+
+          with open('metrics.json', 'w') as f:
+              json.dump(result, f, indent=2)
+
+          print('=== RECOVERY METRICS ===')
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Upload experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 5g-bs-failure-recovery
+          path: |
+            sim/SHNSim/metrics.json
+            sim/SHNSim/run.log
+            sim/SHNSim/*bs_failure_experiment*_SIM_0*.csv
+          if-no-files-found: warn
+          retention-days: 7
