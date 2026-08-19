@@ -274,3 +274,9 @@ jobs:
             sim/SHNSim/*bs_failure_experiment*_SIM_0*.csv
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Signal experiment completion for log retrieval
+        if: success()
+        run: |
+          echo "Experiment completed successfully; intentional nonzero exit only to surface the run in notification email."
+          exit 1
