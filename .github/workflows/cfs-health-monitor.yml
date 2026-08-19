@@ -164,7 +164,7 @@ jobs:
           JSON
           gem=$(find cFS/build-native_std/cosmos/plugin -maxdepth 1 -name '*.gem' -print -quit)
           test -n "$gem"
-          ./cosmos-project/openc3.sh cli load "$gem" DEFAULT --variables cfs_health_monitor/cosmos_plugin_vars.json
+          ./cosmos-project/openc3.sh cli load "$gem" --variables cfs_health_monitor/cosmos_plugin_vars.json
           ./cosmos-project/openc3.sh cli list DEFAULT | tee cfs_health_monitor/openc3_plugins.log
           grep -i 'cfs' cfs_health_monitor/openc3_plugins.log
 
