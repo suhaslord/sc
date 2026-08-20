@@ -116,6 +116,9 @@ def main() -> None:
     require_regex(cmd_def, r"APPEND_PARAMETER\s+NOTE\s+80\s+STRING\b", "COSMOS NOTE must be 10 bytes")
 
     # COSMOS housekeeping fields must mirror the explicit generated C layout.
+    # The three trailing reserved bytes are byte-sized items instead of one
+    # 24-bit little-endian field because OpenC3 requires little-endian fields
+    # to align to supported scalar widths.
     require_in_order(
         tlm_def,
         [
@@ -125,7 +128,9 @@ def main() -> None:
             "APPEND_ITEM CURRENT_SAMPLE 32 UINT",
             "APPEND_ITEM THRESHOLD 32 UINT",
             "APPEND_ITEM ALARM_ACTIVE 8 UINT",
-            "APPEND_ITEM RESERVED 24 UINT",
+            "APPEND_ITEM RESERVED_0 8 UINT",
+            "APPEND_ITEM RESERVED_1 8 UINT",
+            "APPEND_ITEM RESERVED_2 8 UINT",
         ],
         "COSMOS housekeeping telemetry layout",
     )
