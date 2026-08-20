@@ -164,7 +164,27 @@ jobs:
           JSON
           gem=$(find cFS/build-native_std/cosmos/plugin -maxdepth 1 -name '*.gem' -print -quit)
           test -n "$gem"
-          ./cosmos-project/openc3.sh cli load "$gem" --variables cfs_health_monitor/cosmos_plugin_vars.json
+
+          set +e
+          ./cosmos-project/openc3.sh cli validate "$gem" DEFAULT cfs_health_monitor/cosmos_plugin_vars.json \
+            2>&1 | tee cfs_health_monitor/openc3_plugin_validate.log
+          validate_rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$validate_rc" -ne 0 ]; then
+            echo "OpenC3 plugin validation failed with $validate_rc"
+            exit "$validate_rc"
+          fi
+
+          set +e
+          ./cosmos-project/openc3.sh cli load "$gem" --variables cfs_health_monitor/cosmos_plugin_vars.json \
+            2>&1 | tee cfs_health_monitor/openc3_plugin_install.log
+          load_rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$load_rc" -ne 0 ]; then
+            echo "OpenC3 plugin install failed with $load_rc"
+            exit "$load_rc"
+          fi
+
           ./cosmos-project/openc3.sh cli list DEFAULT | tee cfs_health_monitor/openc3_plugins.log
           grep -i 'cfs' cfs_health_monitor/openc3_plugins.log
 
@@ -226,6 +246,8 @@ jobs:
             /tmp/cosmos_gem.txt
             cfs_health_monitor/cosmos/
             cfs_health_monitor/openc3_init.log
+            cfs_health_monitor/openc3_plugin_validate.log
+            cfs_health_monitor/openc3_plugin_install.log
             cfs_health_monitor/openc3_plugins.log
             cfs_health_monitor/openc3_roundtrip.log
             cfs_health_monitor/hm_app_events.log
