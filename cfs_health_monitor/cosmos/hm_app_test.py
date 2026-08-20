@@ -71,7 +71,7 @@ def main():
     refresh_and_check(f"{TARGET} HM_APP_HK ALARM_ACTIVE == 1")
 
     # Raise the threshold above the current sample; alarm should clear immediately.
-    cmd(f"{TARGET} HM_APP_CMD_CONTROL with VALUE 150, ACTION 0, NOTE 'clear alarm'")
+    cmd(f"{TARGET} HM_APP_CMD_CONTROL with VALUE 150, ACTION 0, NOTE 'clear'")
     refresh_and_check(f"{TARGET} HM_APP_HK THRESHOLD == 150")
     refresh_and_check(f"{TARGET} HM_APP_HK ALARM_ACTIVE == 0")
 
