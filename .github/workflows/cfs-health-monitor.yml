@@ -208,6 +208,10 @@ jobs:
         shell: 'script -q -e -c "bash {0}"'
         run: |
           set -e
+          set -a
+          . cosmos-project/.env
+          set +a
+          export OPENC3_API_PASSWORD="$OPENC3_SERVICE_PASSWORD"
           ./cosmos-project/openc3.sh cli script run CFS-1/procedures/hm_app_test.py \
             | tee cfs_health_monitor/openc3_roundtrip.log
           grep -F 'HM_APP live OpenC3/cFS round-trip PASSED' cfs_health_monitor/openc3_roundtrip.log
