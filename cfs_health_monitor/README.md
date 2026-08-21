@@ -44,13 +44,14 @@ CFE_APP, hm_app, HM_APP_Main, HM_APP, 55, 32768, 0x0, 0;
 
 1. clones NASA cFS with its submodules;
 2. generates HM_APP inside that mission tree;
-3. mechanically checks the generated cFS message/function-code contract against the checked-in COSMOS definitions;
+3. mechanically checks the generated cFS message/function-code contract against the checked-in OpenC3/COSMOS definitions;
 4. runs `native_std.prep`, builds, and installs the mission;
 5. verifies the HM_APP binary and cFE executable are staged;
-6. boots `core-cpu1` from the staged CPU directory;
-7. requires both `Health Monitor Initialized.` and the cFE `OPERATIONAL` state in the boot log;
-8. syntax-checks the OpenC3/COSMOS smoke-test procedure;
-9. uploads the boot log, startup script, binary-path evidence, and COSMOS files as a workflow artifact.
+6. boots `core-cpu1` from the staged CPU directory and requires both `Health Monitor Initialized.` and the cFE `OPERATIONAL` state;
+7. prepares the NASA `cfs-cosmos-plugin` with HM_APP command, telemetry, and procedure definitions;
+8. starts OpenC3 COSMOS, validates and installs the generated plugin, and starts cFS for a live integration run;
+9. executes the HM_APP OpenC3 procedure and verifies command/telemetry behavior end to end;
+10. captures boot logs, OpenC3/plugin logs, HM_APP event evidence, runtime diagnostics, and the live round-trip output as workflow artifacts.
 
 `verify_cosmos_contract.py` intentionally checks the generated cFS definitions rather than duplicating assumptions in CI. It verifies topic/MID mapping, function codes, command payload width, and housekeeping field order/width.
 
@@ -61,9 +62,19 @@ The `cosmos/` directory contains:
 - `hm_app_msg_list_patch.rb` — HM_APP command and telemetry MID entries;
 - `hm_app_cmd_def.txt` — send-HK, NOOP, reset, and monitor-control commands;
 - `hm_app_tlm_def.txt` — housekeeping packet definition;
-- `hm_app_test.py` — smoke procedure covering NOOP, counter reset, threshold updates, nominal samples, and alarm transitions.
+- `hm_app_test.py` — live procedure covering NOOP, counter reset, threshold updates, nominal samples, and alarm transitions.
 
-The static contract is checked in CI. The procedure is syntax-checked in CI, but this repository does **not** claim a live OpenC3-to-cFS network command/telemetry round trip until that procedure is actually run in a configured `nasa/cfs-cosmos-plugin` environment.
+The CI gate now proves a live OpenC3-to-cFS command/telemetry round trip in a configured `nasa/cfs-cosmos-plugin` environment. It enables `TO_LAB`, subscribes it to HM_APP housekeeping, receives HM_APP telemetry in OpenC3, sends commands through OpenC3, and verifies the resulting state transitions in housekeeping and cFE event output.
+
+The live procedure verifies this sequence:
+
+1. receive HM_APP housekeeping;
+2. send NOOP and observe the accepted-command counter increment;
+3. reset command counters and observe the counter return to zero;
+4. set the threshold to `100`;
+5. inject sample `75` and confirm no alarm;
+6. inject sample `125` and confirm the alarm asserts;
+7. raise the threshold to `150` and confirm the alarm clears.
 
 ## Reproduce the cFS build/boot gate locally
 
@@ -78,4 +89,4 @@ make native_std.prep
 make -j2 native_std.install
 ```
 
-Then add the HM_APP startup record to `build-native_std/exe/cpu1/cf/cfe_es_startup.scr` and launch `build-native_std/exe/cpu1/core-cpu1` from its `cpu1` directory, matching the CI workflow.
+Then add the HM_APP startup record to `build-native_std/exe/cpu1/cf/cfe_es_startup.scr` and launch `build-native_std/exe/cpu1/core-cpu1` from its `cpu1` directory, matching the CI workflow. The full live OpenC3 integration is automated by `.github/workflows/cfs-health-monitor.yml`.
