@@ -1,8 +1,49 @@
+import time
+
 from openc3.script import *
 
 TARGET = "<%= target_name %>"
+INTERFACE = f"{TARGET}_INTF"
 TLM_OUTPUT_IP = "<%= global_tlm_output_ip %>"
 HM_HK_STREAM_ID = <%= get_cfs_pkt_msg_id('HM_APP_HK', cfs_cpu_num_from_target_name(target_name)) %>
+
+
+def wait_for_command_interface(timeout=45):
+    """Wait until OpenC3's target interface and command handler are ready.
+
+    Plugin installation creates the interface microservice asynchronously. A
+    target command published before its command-handler thread has subscribed
+    to the Redis command stream can be skipped, which surfaces as OpenC3's
+    30-second "waiting for cmd ack" timeout even though cFS is healthy.
+    """
+    deadline = time.time() + timeout
+    last_state = "not-created"
+    last_error = None
+
+    while time.time() < deadline:
+        try:
+            info = get_interface(INTERFACE)
+            last_state = info.get("state", "UNKNOWN")
+            if last_state == "CONNECTED":
+                # The handler thread is created before the interface connection
+                # loop. Give it one scheduling turn, then prove it can consume
+                # and acknowledge an interface directive before sending any cFS
+                # target command.
+                time.sleep(1)
+                details = interface_details(INTERFACE)
+                print(
+                    f"OpenC3 interface ready: {INTERFACE} "
+                    f"state={last_state} details={details}"
+                )
+                return
+        except Exception as error:
+            last_error = error
+        time.sleep(1)
+
+    raise RuntimeError(
+        f"OpenC3 interface {INTERFACE} was not command-ready within {timeout}s; "
+        f"last_state={last_state}, last_error={last_error}"
+    )
 
 
 def enable_live_telemetry_path():
@@ -41,6 +82,7 @@ def refresh_and_check(expression):
 
 def main():
     print("HM_APP live OpenC3/cFS round-trip test")
+    wait_for_command_interface()
     enable_live_telemetry_path()
 
     print("Requesting HM_APP housekeeping through COSMOS")
